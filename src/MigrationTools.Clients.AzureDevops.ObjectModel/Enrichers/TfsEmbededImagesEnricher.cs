@@ -55,7 +55,7 @@ namespace MigrationTools.Enrichers
 
             foreach (Field field in wi.ToWorkItem().Fields)
             {
-                if (field.FieldDefinition.FieldType == FieldType.Html)
+                if (field.FieldDefinition.FieldType == FieldType.Html || field.FieldDefinition.FieldType == FieldType.History)
                 {
                     MatchCollection matches = Regex.Matches((string)field.Value, regExSearchForImageUrl);
 

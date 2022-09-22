@@ -5,7 +5,10 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -52,6 +55,9 @@ namespace VstsSyncMigrator.Engine
         private TfsWorkItemLinkEnricher workItemLinkEnricher;
         private ILogger workItemLog;
 
+        protected HttpClientHandler _httpClientHandler;
+        protected bool _ignore404Errors = true;
+
         public WorkItemMigrationContext(IMigrationEngine engine, IServiceProvider services, ITelemetryLogger telemetry, ILogger<WorkItemMigrationContext> logger) : base(engine, services, telemetry, logger)
         {
             contextLog = Serilog.Log.ForContext<WorkItemMigrationContext>();
@@ -91,7 +97,7 @@ namespace VstsSyncMigrator.Engine
             gitRepositoryEnricher = Services.GetRequiredService<TfsGitRepositoryEnricher>();
             nodeStructureEnricher = Services.GetRequiredService<TfsNodeStructure>();
             nodeStructureEnricher.Configure(new TfsNodeStructureOptions() { Enabled = true, NodeBasePaths = _config.NodeBasePaths, PrefixProjectToNodes = _config.PrefixProjectToNodes });
-            nodeStructureEnricher.ProcessorExecutionBegin(null);
+// tillfällig för att inte tvingas kolla alla area och itteration            nodeStructureEnricher.ProcessorExecutionBegin(null);
 
             _witClient = new WorkItemTrackingHttpClient(Engine.Target.Config.AsTeamProjectConfig().Collection, Engine.Target.Credentials);
             //Validation: make sure that the ReflectedWorkItemId field name specified in the config exists in the target process, preferably on each work item type.
@@ -482,6 +488,7 @@ namespace VstsSyncMigrator.Engine
             if (targetWorkItem != null && _config.LinkMigration && sourceWorkItem.ToWorkItem().Links.Count > 0)
             {
                 TraceWriteLine(LogEventLevel.Information, "Links {SourceWorkItemLinkCount} | LinkMigrator:{LinkMigration}", new Dictionary<string, object>() { { "SourceWorkItemLinkCount", sourceWorkItem.ToWorkItem().Links.Count }, { "LinkMigration", _config.LinkMigration } });
+// kommentera tillfällig för att inte skapa länkar igen
                 workItemLinkEnricher.Enrich(sourceWorkItem, targetWorkItem);
                 AddMetric("RelatedLinkCount", processWorkItemMetrics, targetWorkItem.ToWorkItem().Links.Count);
                 int fixedLinkCount = gitRepositoryEnricher.Enrich(sourceWorkItem, targetWorkItem);
@@ -548,6 +555,10 @@ namespace VstsSyncMigrator.Engine
                 {
                     var currentRevisionWorkItem = sourceWorkItem.GetRevision(revision.Number);
 
+                    // test att spara här för att se om vi skulle kunna lägga in alla bilder som bilagor inna vi lägger in från currentrevisionWorkItem till targetWorkItem
+                    //Funkar inte
+                    //targetWorkItem.SaveToAzureDevOps();
+
                     TraceWriteLine(LogEventLevel.Information, " Processing Revision [{RevisionNumber}]",
                         new Dictionary<string, object>() {
                             {"RevisionNumber", revision.Number }
@@ -563,6 +574,10 @@ namespace VstsSyncMigrator.Engine
 
                     WorkItemTypeChange(targetWorkItem, skipToFinalRevisedWorkItemType, finalDestType, revision, currentRevisionWorkItem, destType);
 
+                    // Todo: modify currentRevisionWorkItem to update history content img src=
+                    //currentRevisionWorkItem.Fields["Sytem.History"]. =
+
+
                     PopulateWorkItem(currentRevisionWorkItem, targetWorkItem, destType);
 
                     // Todo: Ensure all field maps use WorkItemData.Fields to apply a correct mapping
@@ -571,8 +586,12 @@ namespace VstsSyncMigrator.Engine
                     // Todo: Think about an "UpdateChangedBy" flag as this is expensive! (2s/WI instead of 1,5s when writing "Migration")
                     targetWorkItem.ToWorkItem().Fields["System.ChangedBy"].Value = currentRevisionWorkItem.Fields["System.ChangedBy"];
 
-                    targetWorkItem.ToWorkItem().Fields["System.History"].Value = currentRevisionWorkItem.Fields["System.History"];
+                    //Testar att kommentera denna och flytta den till nästa save
+                    //targetWorkItem.ToWorkItem().Fields["System.History"].Value = currentRevisionWorkItem.Fields["System.History"];
                     //Debug.WriteLine("Discussion:" + currentRevisionWorkItem.Revisions[revision.Index].Fields["System.History"].Value);
+
+                    //test
+                    //targetWorkItem.ToWorkItem().Fields["System.History"].Value = "test";
 
                     TfsReflectedWorkItemId reflectedUri = (TfsReflectedWorkItemId)Engine.Source.WorkItems.CreateReflectedWorkItemId(sourceWorkItem);
                     if (!targetWorkItem.ToWorkItem().Fields.Contains(Engine.Target.Config.AsTeamProjectConfig().ReflectedWorkItemIDFieldName))
@@ -583,14 +602,158 @@ namespace VstsSyncMigrator.Engine
                     }
                     targetWorkItem.ToWorkItem().Fields[Engine.Target.Config.AsTeamProjectConfig().ReflectedWorkItemIDFieldName].Value = reflectedUri.ToString();
 
-                    targetWorkItem.SaveToAzureDevOps();
-                    TraceWriteLine(LogEventLevel.Information,
-                        " Saved TargetWorkItem {TargetWorkItemId}. Replayed revision {RevisionNumber} of {RevisionsToMigrateCount}",
-                       new Dictionary<string, object>() {
+                    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                    // testar om det finns någon history att spara
+                    if ((string)currentRevisionWorkItem.Fields["System.History"] != "")
+                    {
+                        // kontrollerar om currentRevisionWorkItem.Fields["System.History"] inehåller några img.*src taggarr
+                        string regExSearchForImageUrl = "(?<=<img.*src=\")[^\"]*";
+                        MatchCollection matches = Regex.Matches((string)currentRevisionWorkItem.Fields["System.History"], regExSearchForImageUrl);
+                        if (matches.Count >0)
+                        {
+                            // foreeatch on all träffar
+                            string oldTfsurl = Engine.Source.Config.AsTeamProjectConfig().Collection.ToString();
+                            string newTfsurl = Engine.Target.Config.AsTeamProjectConfig().Collection.ToString();
+                            //var oldTfsurlOppositeSchema = GetUrlWithOppositeSchema(oldTfsurl);
+                            string sourcePersonalAccessToken = Engine.Source.Config.AsTeamProjectConfig().PersonalAccessToken;
+                            string regExSearchFileName = "(?<=FileName=)[^=]*";
+                            int attachmentIndex = 0;
+                            Dictionary<int, string> attachments = new Dictionary<int, string> { };
+                            
+                            foreach (Match match in matches)
+                            {
+                                // hämta ut bild från TFS
+                                // Spara ner bild till disk
+                                // lägg till bild som attatchment i targetWorkItem
+                                // Bugg om samma fil kommer med två gånger så krashar det
+                                //if (match.Value.ToLower().Contains(oldTfsurl.ToLower()) || match.Value.ToLower().Contains(oldTfsurlOppositeSchema.ToLower()))
+                                if (match.Value.ToLower().Contains(oldTfsurl.ToLower()))
+                                {
+                                    //save image locally and upload as attachment
+                                    Match newFileNameMatch = Regex.Match(match.Value, regExSearchFileName, RegexOptions.IgnoreCase);
+                                    if (newFileNameMatch.Success)
+                                    {
+                                        Log.LogInformation("FixHistory field has match: {matchValue}", System.Net.WebUtility.HtmlDecode(match.Value));
+                                        string historyImgFolder = "C:\\Temp\\WorkItemHistoryImgWorkingFolder\\";
+                                        string fullImageFilePath = historyImgFolder + newFileNameMatch.Value;
+
+                                        _httpClientHandler = new HttpClientHandler { AllowAutoRedirect = false, UseDefaultCredentials = true, AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate };
+                                        using (var httpClient = new HttpClient(_httpClientHandler, false))
+                                        {
+                                            if (!string.IsNullOrEmpty(sourcePersonalAccessToken))
+                                            {
+                                                httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(System.Text.ASCIIEncoding.ASCII.GetBytes(string.Format("{0}:{1}", "", sourcePersonalAccessToken))));
+                                            }
+                                            //var result = DownloadFile(httpClient, "http://tfs.clasohlson.se:8080/tfs/DefaultCollection/_api/_wit/DownloadAttachment?fileName=Stryk+pall+19093439.PNG&attachmentId=50384&contentOnly=true&__v=5", fullImageFilePath);
+                                            var result = DownloadFile(httpClient, match.Value, fullImageFilePath);
+                                            if (!result.IsSuccessStatusCode)
+                                            {
+                                                if (_ignore404Errors && result.StatusCode == HttpStatusCode.NotFound)
+                                                {
+                                                    Log.LogDebug("EmbededImagesRepairEnricher: Image {MatchValue} could not be found in WorkItem {WorkItemId}", match.Value, targetWorkItem.Id);
+                                                    continue;
+                                                }
+                                                else
+                                                {
+                                                    result.EnsureSuccessStatusCode();
+                                                }
+                                            }
+                                        }
+
+                                        if (GetImageFormat(File.ReadAllBytes(fullImageFilePath)) == ImageFormat.unknown)
+                                        {
+                                            // todo: byt ut targetworkitem till source item
+                                            throw new Exception($"Downloaded image [{fullImageFilePath}] from Work Item [{targetWorkItem.ToWorkItem().Id}] could not be identified as an image. Authentication issue?");
+                                        }
+
+                                        attachmentIndex = targetWorkItem.ToWorkItem().Attachments.Add(new Attachment(fullImageFilePath));
+                                        attachments.Add(attachmentIndex, match.Value);
+                                        // Spara ner attachemntIndex, oldtfs url till en variabel som kan användas utanför foreach loop så att bar en save behövs för flera bilder
+                                    }
+                                }
+                            }
+                            // sparar targetWorkItem så att bilderna laddas upp till nytt Work Item
+                            targetWorkItem.SaveToAzureDevOps();
+                            TraceWriteLine(LogEventLevel.Information,
+                                " Saved TargetWorkItem {TargetWorkItemId}. Replayed revision {RevisionNumber} of {RevisionsToMigrateCount}",
+                               new Dictionary<string, object>() {
                                {"TargetWorkItemId", targetWorkItem.Id },
                                {"RevisionNumber", revision.Number },
                                {"RevisionsToMigrateCount",  revisionsToMigrate.Count}
-                           });
+                                   });
+
+                            // Loopa runt array med alla bilder för att hämta hem nu URI och uppdatera History fältet med nya länkar
+                            // kolla först om det finns några attatchments innan foreach
+                            string history2update = currentRevisionWorkItem.Fields["System.History"].ToString();
+                            foreach (KeyValuePair<int, string> attachment in attachments)
+                            {
+                                string oldtfsimage = attachment.Value;
+                                // Läs in nytt URI för sparade bilden
+                                var newImageLink = targetWorkItem.ToWorkItem().Attachments[attachment.Key].Uri.ToString();
+
+                                // uppdatera history med nya URI för aktuell bild
+                                history2update = history2update.ToString().Replace(oldtfsimage, newImageLink);
+
+                                //wi.ToWorkItem().Attachments.RemoveAt(attachmentIndex);
+                            }
+                            // Lägg till history2update till targetWorkItem
+                            targetWorkItem.ToWorkItem().Fields["System.History"].Value = history2update;
+
+                            // uppdatera System.ChangedDate med en sekund och lägg in den till targetworkItem
+                            DateTime dt = DateTime.Parse(currentRevisionWorkItem.Fields["System.ChangedDate"].ToString());
+                            // creating object of TimeSpan
+                            TimeSpan duration = new TimeSpan(0, 0, 0, 1);
+                            // TODO kolla om det går att kontrollera så att föregående revision inte har samma eller fler secundrar än vad vi försöker spara nu.
+                            // adding the TimeSpan of 1 sec using Add() method;
+                            dt = dt.Add(duration);
+                            targetWorkItem.ToWorkItem().Fields["System.ChangedDate"].Value = dt;
+
+                            // Save targetWorkItem med uppdaterat history fält och en secunds extra tid
+                            targetWorkItem.SaveToAzureDevOps();
+                            TraceWriteLine(LogEventLevel.Information,
+                                " Saved TargetWorkItem {TargetWorkItemId}. Replayed revision {RevisionNumber} of {RevisionsToMigrateCount}",
+                               new Dictionary<string, object>() {
+                               {"TargetWorkItemId", targetWorkItem.Id },
+                               {"RevisionNumber", revision.Number },
+                               {"RevisionsToMigrateCount",  revisionsToMigrate.Count}
+                                   });
+                        }
+                        else
+                        {
+                            // lägg in history till targetWorkItem omodifierad då inga bilder finns i history
+                            targetWorkItem.ToWorkItem().Fields["System.History"].Value = currentRevisionWorkItem.Fields["System.History"];
+                            // sparar targetWorkItem
+                            targetWorkItem.SaveToAzureDevOps();
+                            TraceWriteLine(LogEventLevel.Information,
+                                " Saved TargetWorkItem {TargetWorkItemId}. Replayed revision {RevisionNumber} of {RevisionsToMigrateCount}",
+                               new Dictionary<string, object>() {
+                               {"TargetWorkItemId", targetWorkItem.Id },
+                               {"RevisionNumber", revision.Number },
+                               {"RevisionsToMigrateCount",  revisionsToMigrate.Count}
+                                   });
+                            // hoppa till nästa revision
+                        }
+                    }
+                    else
+                    {
+                        // lägg in history till targetWorkItem
+                        // denna behövs nog inte då ingen history ska finnas här.
+                        targetWorkItem.ToWorkItem().Fields["System.History"].Value = currentRevisionWorkItem.Fields["System.History"];
+
+                        // sparar targetWorkItem
+                        targetWorkItem.SaveToAzureDevOps();
+                        TraceWriteLine(LogEventLevel.Information,
+                            " Saved TargetWorkItem {TargetWorkItemId}. Replayed revision {RevisionNumber} of {RevisionsToMigrateCount}",
+                           new Dictionary<string, object>() {
+                               {"TargetWorkItemId", targetWorkItem.Id },
+                               {"RevisionNumber", revision.Number },
+                               {"RevisionsToMigrateCount",  revisionsToMigrate.Count}
+                               });
+                        // hoppa till nästa revision
+                    }
+                    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                 }
 
                 if (targetWorkItem != null)
@@ -696,6 +859,99 @@ namespace VstsSyncMigrator.Engine
                 };
                 _witClient.UpdateWorkItemAsync(patchDoc, int.Parse(targetWorkItem.Id), bypassRules: true).Wait();
             }
+        }
+
+        protected static ImageFormat GetImageFormat(byte[] bytes)
+        {
+            // see http://www.mikekunz.com/image_file_header.html
+            var bmp = Encoding.ASCII.GetBytes("BM");     // BMP
+            var gif = Encoding.ASCII.GetBytes("GIF");    // GIF
+            var png = new byte[] { 137, 80, 78, 71 };    // PNG
+            var tiff = new byte[] { 73, 73, 42 };         // TIFF
+            var tiff2 = new byte[] { 77, 77, 42 };         // TIFF
+            var jpeg = new byte[] { 255, 216, 255, 224 }; // jpeg
+            var jpeg2 = new byte[] { 255, 216, 255, 225 }; // jpeg canon
+            var jpeg3 = new byte[] { 255, 216, 255, 237 }; // jpeg
+            var jpeg4 = new byte[] { 255, 216, 255, 232 }; // jpeg still picture interchange file format (SPIFF)
+            var jpeg5 = new byte[] { 255, 216, 255, 226 }; // jpeg canon
+
+            if (bmp.SequenceEqual(bytes.Take(bmp.Length)))
+                return ImageFormat.bmp;
+
+            if (gif.SequenceEqual(bytes.Take(gif.Length)))
+                return ImageFormat.gif;
+
+            if (png.SequenceEqual(bytes.Take(png.Length)))
+                return ImageFormat.png;
+
+            if (tiff.SequenceEqual(bytes.Take(tiff.Length)))
+                return ImageFormat.tiff;
+
+            if (tiff2.SequenceEqual(bytes.Take(tiff2.Length)))
+                return ImageFormat.tiff;
+
+            if (jpeg.SequenceEqual(bytes.Take(jpeg.Length)))
+                return ImageFormat.jpeg;
+
+            if (jpeg2.SequenceEqual(bytes.Take(jpeg2.Length)))
+                return ImageFormat.jpeg;
+
+            if (jpeg3.SequenceEqual(bytes.Take(jpeg3.Length)))
+                return ImageFormat.jpeg;
+
+            if (jpeg4.SequenceEqual(bytes.Take(jpeg4.Length)))
+                return ImageFormat.jpeg;
+
+            if (jpeg5.SequenceEqual(bytes.Take(jpeg5.Length)))
+                return ImageFormat.jpeg;
+
+            return ImageFormat.unknown;
+        }
+
+        protected string GetUrlWithOppositeSchema(string url)
+        {
+            string oppositeUrl;
+            var sourceUrl = new Uri(url);
+            if (sourceUrl.Scheme == Uri.UriSchemeHttp)
+            {
+                oppositeUrl = "https://" + sourceUrl.Host + sourceUrl.AbsolutePath;
+            }
+            else if (sourceUrl.Scheme == Uri.UriSchemeHttps)
+            {
+                oppositeUrl = "http://" + sourceUrl.Host + sourceUrl.AbsolutePath;
+            }
+            else
+                oppositeUrl = url;
+
+            return oppositeUrl;
+        }
+
+        protected enum ImageFormat
+        {
+            unknown,
+            bmp,
+            gif,
+            png,
+            tiff,
+            jpeg
+        }
+
+        protected static HttpResponseMessage DownloadFile(HttpClient httpClient, string url, string destinationPath)
+        {
+            var response = httpClient.GetAsync(url).ConfigureAwait(false).GetAwaiter().GetResult();
+
+            if (response.IsSuccessStatusCode)
+            {
+                using (var stream = response.Content.ReadAsStreamAsync().ConfigureAwait(false).GetAwaiter().GetResult())
+                {
+                    using (var fileWriter = new FileStream(destinationPath, FileMode.Create))
+                    {
+                        stream.CopyTo(fileWriter);
+                    }
+                }
+            }
+
+            return response;
         }
     }
 }
