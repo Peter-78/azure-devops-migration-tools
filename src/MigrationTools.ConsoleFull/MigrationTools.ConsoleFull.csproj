@@ -25,4 +25,6 @@
     <ProjectReference Include="..\MigrationTools.Clients.AzureDevops.ObjectModel\MigrationTools.Clients.AzureDevops.ObjectModel.csproj" />
     <ProjectReference Include="..\VstsSyncMigrator.Core\VstsSyncMigrator.Core.csproj" />
   </ItemGroup>
+
+  <ProjectExtensions><VisualStudio><UserProperties /></VisualStudio></ProjectExtensions>
 </Project>
