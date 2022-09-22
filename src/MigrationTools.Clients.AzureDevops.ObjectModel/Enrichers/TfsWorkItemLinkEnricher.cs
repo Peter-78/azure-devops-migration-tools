@@ -245,6 +245,8 @@ namespace MigrationTools.Enrichers
 
                         WorkItemLinkTypeEnd linkTypeEnd = client.Store.WorkItemLinkTypes.LinkTypeEnds[rl.LinkTypeEnd.ImmutableName];
                         RelatedLink newRl = new RelatedLink(linkTypeEnd, int.Parse(wiTargetR.Id));
+                        // added comment to new link
+                        newRl.Comment = rl.Comment;
                         if (linkTypeEnd.ImmutableName == "System.LinkTypes.Hierarchy-Forward")
                         {
                             var potentialParentConflictLink = ( // TF201036: You cannot add a Child link between work items xxx and xxx because a work item can have only one Parent link.
@@ -258,6 +260,8 @@ namespace MigrationTools.Enrichers
                             }
                             linkTypeEnd = ((TfsWorkItemMigrationClient)Engine.Target.WorkItems).Store.WorkItemLinkTypes.LinkTypeEnds["System.LinkTypes.Hierarchy-Reverse"];
                             RelatedLink newLl = new RelatedLink(linkTypeEnd, int.Parse(wiTargetL.Id));
+                            // added comment to new link
+                            newLl.Comment = rl.Comment;
                             wiTargetR.ToWorkItem().Links.Add(newLl);
                             wiTargetR.ToWorkItem().Fields["System.ChangedBy"].Value = "Migration";
                             wiTargetR.SaveToAzureDevOps();
