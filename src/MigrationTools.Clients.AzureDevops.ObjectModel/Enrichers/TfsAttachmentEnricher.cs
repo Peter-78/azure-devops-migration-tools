@@ -51,7 +51,7 @@ namespace MigrationTools.Enrichers
                     Log.Debug("AttachmentMigrationEnricher: Exported {Filename} to disk", System.IO.Path.GetFileName(filepath));
                     if (filepath != null)
                     {
-                        ImportAttachemnt(target.ToWorkItem(), filepath, save);
+                        ImportAttachemnt(target.ToWorkItem(), filepath, save, wia.Comment);
                         Log.Debug("AttachmentMigrationEnricher: Imported {Filename} from disk", System.IO.Path.GetFileName(filepath));
                     }
                 }
@@ -111,7 +111,7 @@ namespace MigrationTools.Enrichers
             return fpath;
         }
 
-        private void ImportAttachemnt(WorkItem targetWorkItem, string filepath, bool save = true)
+        private void ImportAttachemnt(WorkItem targetWorkItem, string filepath, bool save = true, string comment = null)
         {
             var filename = System.IO.Path.GetFileName(filepath);
             FileInfo fi = new FileInfo(filepath);
@@ -122,6 +122,7 @@ namespace MigrationTools.Enrichers
                 if (attachment == null)
                 {
                     Attachment a = new Attachment(filepath);
+                    a.Comment = comment;
                     targetWorkItem.Attachments.Add(a);
                 }
                 else
