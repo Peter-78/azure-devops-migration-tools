@@ -136,12 +136,14 @@ namespace MigrationTools.Enrichers
                                 case "Branch":
                                     newLink = new ExternalLink(((TfsWorkItemMigrationClient)Engine.Target.WorkItems).Store.RegisteredLinkTypes[ArtifactLinkIds.Branch],
                                         $"vstfs:///git/ref/{targetRepoInfo.GitRepo.ProjectReference.Id}%2f{targetRepoInfo.GitRepo.Id}%2f{sourceRepoInfo.CommitID}");
+                                    newLink.Comment = el.Comment;
                                     break;
 
                                 case "Fixed in Changeset":  // TFVC
                                 case "Fixed in Commit":
                                     newLink = new ExternalLink(((TfsWorkItemMigrationClient)Engine.Target.WorkItems).Store.RegisteredLinkTypes[ArtifactLinkIds.Commit],
                                         $"vstfs:///git/commit/{targetRepoInfo.GitRepo.ProjectReference.Id}%2f{targetRepoInfo.GitRepo.Id}%2f{sourceRepoInfo.CommitID}");
+                                    newLink.Comment = el.Comment;
                                     break;
 
                                 case "Pull Request":
